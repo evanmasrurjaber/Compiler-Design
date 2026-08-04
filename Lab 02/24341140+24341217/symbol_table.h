@@ -79,8 +79,11 @@ public:
         while (temp != NULL)
         {
             temp->print_scope_table(outlog);
-            outlog << endl;
             temp = temp->get_parent_scope();
+            if (temp != NULL)
+            {
+                outlog << endl; // extra blank line between scope tables
+            }
         }
         outlog << "################################" << endl << endl;
     }
