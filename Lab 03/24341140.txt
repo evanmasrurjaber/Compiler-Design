@@ -1,0 +1,41 @@
+Intermediate Submission - Lab 03
+
+1. Error Counting
+   - A global error counter tracks all errors encountered.
+   - Total error count is printed at the end of both the log file
+     and the error file.
+
+2. Multiple Declaration of Variables
+   - Reports an error if a variable is declared more than once
+     in the same scope.
+
+3. Multiple Declaration of Functions
+   - Reports an error if a function with the same name is defined
+     more than once.
+
+5. Multiple Declaration in Function Parameters
+   - Reports an error if two parameters of the same function share
+     the same name.
+
+6. Void Variable Type
+   - Reports an error if a variable is declared with the void type.
+
+7. Undeclared Variable
+   - Reports an error when a variable is used in an expression or
+     statement (including printf) without being declared.
+
+8. Undeclared Function
+   - Reports an error when a function is called but was never defined.
+
+9. Array Used Without Index
+   - Reports an error when an array variable is used in an expression
+     without providing an index.
+
+10. Non-Array Variable Used With Index
+    - Reports an error when an index operator is applied to a variable
+      that is not an array.
+
+11. Data Type Propagation
+    - Return types of expressions are now tracked and propagated
+      through the grammar rules (int, float, void), which is required
+      as a foundation for the remaining checks.

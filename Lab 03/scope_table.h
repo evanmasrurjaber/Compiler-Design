@@ -56,9 +56,15 @@ public:
     bool insert_in_scope(symbol_info *symbol)
     {
         // Check if already exists in this scope
-        if (lookup_in_scope(symbol) != NULL)
+        symbol_info *existing = lookup_in_scope(symbol);
+        if (existing != NULL)
         {
-            return false; // already declared
+            // Update the existing symbol's metadata to match the new declaration
+            // (the sample implementation updates type even on multiple declaration)
+            existing->set_symbol_class(symbol->get_symbol_class());
+            existing->set_data_type(symbol->get_data_type());
+            existing->set_array_size(symbol->get_array_size());
+            return false; // already declared — caller will report error
         }
         int idx = hash_function(symbol->get_name());
         table[idx].push_back(symbol);

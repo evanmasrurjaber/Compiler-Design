@@ -15,6 +15,9 @@ symbol_table *sym_table;
 int lines = 1;
 
 ofstream outlog;
+ofstream outerr;
+
+int error_count = 0;
 
 // Current type being declared (int / float / void / char)
 string current_type = "";
@@ -27,6 +30,9 @@ struct DeclEntry {
 };
 vector<DeclEntry> current_decl_list;
 
+// Argument types for the current function call
+vector<string> current_arg_types;
+
 // Parameters for the current function being defined: (param_type, param_name)
 vector<pair<string,string>> current_params;
 
@@ -38,6 +44,9 @@ bool func_scope_entered = false;
 // we need to insert the function symbol into the PARENT scope before printing.
 // pending_func_sym holds the function symbol to be inserted before print_all_scopes.
 symbol_info *pending_func_sym = NULL;
+
+// Name of the current function being defined (for error messages)
+string current_func_name = "";
 
 void yyerror(char *s)
 {
@@ -105,7 +114,6 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 		{
 			// Build and insert the function symbol into the CURRENT (parent/global) scope
 			// before entering the function body scope.
-			// This way it appears in print_all_scopes when the function body ends.
 			symbol_info *func_sym = new symbol_info($2->getname(), "ID");
 			func_sym->set_symbol_class("function");
 			func_sym->set_data_type($1->getname());
@@ -113,7 +121,16 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 			{
 				func_sym->add_param(p.first, p.second);
 			}
-			sym_table->insert(func_sym);
+
+			// Check for multiple declaration of function
+			bool inserted = sym_table->insert(func_sym);
+			if (!inserted)
+			{
+				outerr<<"At line no: "<<lines<<" Multiple declaration of function "<<$2->getname()<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" Multiple declaration of function "<<$2->getname()<<endl<<endl;
+				error_count++;
+				delete func_sym;
+			}
 
 			// Now enter scope for function body
 			sym_table->enter_scope();
@@ -127,21 +144,30 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 					symbol_info *param_sym = new symbol_info(p.second, "ID");
 					param_sym->set_symbol_class("variable");
 					param_sym->set_data_type(p.first);
-					sym_table->insert(param_sym);
+					bool param_inserted = sym_table->insert(param_sym);
+					if (!param_inserted)
+					{
+						outerr<<"At line no: "<<lines<<" Multiple declaration of variable "<<p.second<<" in parameter of "<<$2->getname()<<endl<<endl;
+						outlog<<"At line no: "<<lines<<" Multiple declaration of variable "<<p.second<<" in parameter of "<<$2->getname()<<endl<<endl;
+						error_count++;
+						delete param_sym;
+					}
 				}
 			}
 
 			// Tell compound_statement not to create another scope
 			func_scope_entered = true;
+			current_func_name = $2->getname();
 		}
 		compound_statement
 		{	
 			outlog<<"At line no: "<<lines<<" func_definition : type_specifier ID LPAREN param_list RPAREN compound_statement "<<endl<<endl;
-			outlog<<$1->getname()<<" "<<$2->getname()<<"("+$4->getname()+")\n"<<$7->getname()<<endl<<endl;
+			outlog<<$1->getname()<<" "<<$2->getname()<<"("+$4->getname()+")\\n"<<$7->getname()<<endl<<endl;
 			
 			$$ = new symbol_info($1->getname()+" "+$2->getname()+"("+$4->getname()+")\n"+$7->getname(),"func_def");
 
 			current_params.clear();
+			current_func_name = "";
 		}
 		| type_specifier ID LPAREN RPAREN
 		{
@@ -150,7 +176,15 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 			func_sym->set_symbol_class("function");
 			func_sym->set_data_type($1->getname());
 			// no params
-			sym_table->insert(func_sym);
+
+			bool inserted = sym_table->insert(func_sym);
+			if (!inserted)
+			{
+				outerr<<"At line no: "<<lines<<" Multiple declaration of function "<<$2->getname()<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" Multiple declaration of function "<<$2->getname()<<endl<<endl;
+				error_count++;
+				delete func_sym;
+			}
 
 			// Enter scope for function body
 			sym_table->enter_scope();
@@ -160,6 +194,7 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 
 			// Tell compound_statement not to create another scope
 			func_scope_entered = true;
+			current_func_name = $2->getname();
 		}
 		compound_statement
 		{
@@ -170,6 +205,7 @@ func_definition : type_specifier ID LPAREN param_list RPAREN
 			$$ = new symbol_info($1->getname()+" "+$2->getname()+"()\n"+$6->getname(),"func_def");
 
 			current_params.clear();
+			current_func_name = "";
 		}
  		;
 
@@ -275,26 +311,45 @@ variable_decl : type_specifier declaration_list SEMICOLON
 			
 			$$ = new symbol_info($1->getname()+" "+$2->getname()+";","var_dec");
 			
-			// Insert all variables/arrays from current_decl_list into the symbol table
-			for (auto &entry : current_decl_list)
+			// Check: void variable type is not allowed
+			if (current_type == "void")
 			{
-				symbol_info *var_sym = new symbol_info(entry.name, "ID");
-				if (entry.is_array)
-				{
-					var_sym->set_symbol_class("array");
-					var_sym->set_data_type(current_type);
-					var_sym->set_array_size(entry.array_size);
-				}
-				else
-				{
-					var_sym->set_symbol_class("variable");
-					var_sym->set_data_type(current_type);
-				}
-				sym_table->insert(var_sym);
+				outerr<<"At line no: "<<lines<<" variable type can not be void "<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" variable type can not be void "<<endl<<endl;
+				error_count++;
+				current_decl_list.clear();
 			}
-			current_decl_list.clear();
+			else
+			{
+				// Insert all variables/arrays from current_decl_list into the symbol table
+				for (auto &entry : current_decl_list)
+				{
+					symbol_info *var_sym = new symbol_info(entry.name, "ID");
+					if (entry.is_array)
+					{
+						var_sym->set_symbol_class("array");
+						var_sym->set_data_type(current_type);
+						var_sym->set_array_size(entry.array_size);
+					}
+					else
+					{
+						var_sym->set_symbol_class("variable");
+						var_sym->set_data_type(current_type);
+					}
+
+					bool inserted = sym_table->insert(var_sym);
+					if (!inserted)
+					{
+						outerr<<"At line no: "<<lines<<" Multiple declaration of variable "<<entry.name<<endl<<endl;
+						outlog<<"At line no: "<<lines<<" Multiple declaration of variable "<<entry.name<<endl<<endl;
+						error_count++;
+						delete var_sym;
+					}
+				}
+				current_decl_list.clear();
+			}
 		 }
- 		 ;
+  		 ;
 
 type_specifier : INT
 		{
@@ -416,7 +471,7 @@ statement : variable_decl
 	  }
 	  | func_definition
 	  {
-	  		outlog<<"At line no: "<<lines<<" statement : func_definition "<<endl<<endl;
+  		outlog<<"At line no: "<<lines<<" statement : func_definition "<<endl<<endl;
             outlog<<$1->getname()<<endl<<endl;
 
             $$ = new symbol_info($1->getname(),"stmnt");
@@ -467,6 +522,17 @@ statement : variable_decl
 	  {
     	outlog<<"At line no: "<<lines<<" statement : PRINTLN LPAREN ID RPAREN SEMICOLON "<<endl<<endl;
 		outlog<<"printf("<<$3->getname()<<");"<<endl<<endl; 
+
+		// Check if the variable used in printf is declared
+		symbol_info *lookup_sym = new symbol_info($3->getname(), "ID");
+		symbol_info *found = sym_table->lookup(lookup_sym);
+		delete lookup_sym;
+		if (found == NULL)
+		{
+			outerr<<"At line no: "<<lines<<" Undeclared variable "<<$3->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" Undeclared variable "<<$3->getname()<<endl<<endl;
+			error_count++;
+		}
 		
 		$$ = new symbol_info("printf("+$3->getname()+");","stmnt");
 	  }
@@ -499,16 +565,77 @@ variable : ID
       {
 	    outlog<<"At line no: "<<lines<<" variable : ID "<<endl<<endl;
 		outlog<<$1->getname()<<endl<<endl;
-		
+
+		// Check if variable is declared
+		symbol_info *lookup_sym = new symbol_info($1->getname(), "ID");
+		symbol_info *found = sym_table->lookup(lookup_sym);
+		delete lookup_sym;
+
+		if (found == NULL)
+		{
+			outerr<<"At line no: "<<lines<<" Undeclared variable "<<$1->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" Undeclared variable "<<$1->getname()<<endl<<endl;
+			error_count++;
+		}
+		else if (found->get_symbol_class() == "array")
+		{
+			// Using array without index
+			outerr<<"At line no: "<<lines<<" variable is of array type : "<<$1->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" variable is of array type : "<<$1->getname()<<endl<<endl;
+			error_count++;
+		}
+
 		$$ = new symbol_info($1->getname(),"varbl");
+		if (found != NULL && found->get_symbol_class() != "array")
+			$$->set_data_type(found->get_data_type());
+		// If found is array but used without index, leave data_type as ""
+		// so that argument type mismatch checks can detect it.
 		
 	 }	
 	 | ID LTHIRD expression RTHIRD 
 	 {
 	 	outlog<<"At line no: "<<lines<<" variable : ID LTHIRD expression RTHIRD "<<endl<<endl;
 		outlog<<$1->getname()<<"["<<$3->getname()<<"]"<<endl<<endl;
+
+		// Check if variable is declared
+		symbol_info *lookup_sym = new symbol_info($1->getname(), "ID");
+		symbol_info *found = sym_table->lookup(lookup_sym);
+		delete lookup_sym;
+
+		if (found == NULL)
+		{
+			outerr<<"At line no: "<<lines<<" Undeclared variable "<<$1->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" Undeclared variable "<<$1->getname()<<endl<<endl;
+			error_count++;
+		}
+		else if (found->get_symbol_class() != "array")
+		{
+			// Using index on non-array variable
+			outerr<<"At line no: "<<lines<<" variable is not of array type : "<<$1->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" variable is not of array type : "<<$1->getname()<<endl<<endl;
+			error_count++;
+		}
+		else
+		{
+			// Variable IS an array - check if the index expression type is integer
+			if ($3->get_data_type() != "int")
+			{
+				outerr<<"At line no: "<<lines<<" array index is not of integer type : "<<$1->getname()<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" array index is not of integer type : "<<$1->getname()<<endl<<endl;
+				error_count++;
+			}
+			else if (found->get_data_type() != "int")
+			{
+				// Array element type is not int (e.g. float array)
+				outerr<<"At line no: "<<lines<<" array index is not of integer type : "<<$1->getname()<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" array index is not of integer type : "<<$1->getname()<<endl<<endl;
+				error_count++;
+			}
+		}
 		
 		$$ = new symbol_info($1->getname()+"["+$3->getname()+"]","varbl");
+		if (found != NULL)
+			$$->set_data_type(found->get_data_type());
 	 }
 	 ;
 	 
@@ -518,6 +645,7 @@ expression : logic_expression
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"expr");
+		$$->set_data_type($1->get_data_type());
 	   }
 	   | variable ASSIGNOP logic_expression 	
 	   {
@@ -534,13 +662,16 @@ logic_expression : rel_expression
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"lgc_expr");
+		$$->set_data_type($1->get_data_type());
 	     }	
 		 | rel_expression LOGICOP rel_expression 
 		 {
     	outlog<<"At line no: "<<lines<<" logic_expression : rel_expression LOGICOP rel_expression "<<endl<<endl;
 		outlog<<$1->getname()<<$2->getname()<<$3->getname()<<endl<<endl;
 		
+		// Result of LOGICOP is integer
 		$$ = new symbol_info($1->getname()+$2->getname()+$3->getname(),"lgc_expr");
+		$$->set_data_type("int");
 	     }	
 		 ;
 		
@@ -550,13 +681,16 @@ rel_expression	: simple_expression
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"rel_expr");
+		$$->set_data_type($1->get_data_type());
 	    }
 		| simple_expression RELOP simple_expression
 		{
     	outlog<<"At line no: "<<lines<<" rel_expression : simple_expression RELOP simple_expression "<<endl<<endl;
 		outlog<<$1->getname()<<$2->getname()<<$3->getname()<<endl<<endl;
 		
+		// Result of RELOP is integer
 		$$ = new symbol_info($1->getname()+$2->getname()+$3->getname(),"rel_expr");
+		$$->set_data_type("int");
 	    }
 		;
 		
@@ -566,6 +700,7 @@ simple_expression : term
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"simp_expr");
+		$$->set_data_type($1->get_data_type());
 		
 	      }
 		  | simple_expression ADDOP term 
@@ -573,7 +708,12 @@ simple_expression : term
     	outlog<<"At line no: "<<lines<<" simple_expression : simple_expression ADDOP term "<<endl<<endl;
 		outlog<<$1->getname()<<$2->getname()<<$3->getname()<<endl<<endl;
 		
+		// Result type: if either is float, result is float
+		string res_type = "int";
+		if ($1->get_data_type() == "float" || $3->get_data_type() == "float")
+			res_type = "float";
 		$$ = new symbol_info($1->getname()+$2->getname()+$3->getname(),"simp_expr");
+		$$->set_data_type(res_type);
 	      }
 		  ;
 		
@@ -583,6 +723,7 @@ term :	unary_expression
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"term");
+		$$->set_data_type($1->get_data_type());
 		
 	 }
      |  term MULOP unary_expression
@@ -590,7 +731,11 @@ term :	unary_expression
     	outlog<<"At line no: "<<lines<<" term : term MULOP unary_expression "<<endl<<endl;
 		outlog<<$1->getname()<<$2->getname()<<$3->getname()<<endl<<endl;
 		
+		string res_type = "int";
+		if ($1->get_data_type() == "float" || $3->get_data_type() == "float")
+			res_type = "float";
 		$$ = new symbol_info($1->getname()+$2->getname()+$3->getname(),"term");
+		$$->set_data_type(res_type);
 		
 	 }
      ;
@@ -601,6 +746,7 @@ unary_expression : ADDOP unary_expression
 		outlog<<$1->getname()<<$2->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname()+$2->getname(),"un_expr");
+		$$->set_data_type($2->get_data_type());
 	     }
 		 | NOT unary_expression 
 		 {
@@ -608,6 +754,7 @@ unary_expression : ADDOP unary_expression
 		outlog<<"!"<<$2->getname()<<endl<<endl;
 		
 		$$ = new symbol_info("!"+$2->getname(),"un_expr");
+		$$->set_data_type("int");
 	     }
 		 | factor_info  
 		 {
@@ -615,6 +762,7 @@ unary_expression : ADDOP unary_expression
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"un_expr");
+		$$->set_data_type($1->get_data_type());
 	     }
 		 ;
 factor_info : factor	{
@@ -622,49 +770,76 @@ factor_info : factor	{
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"fctr_info");
-	}	
+		$$->set_data_type($1->get_data_type());
+}	
 factor	: variable
     {
 	    outlog<<"At line no: "<<lines<<" factor : variable "<<endl<<endl;
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"fctr");
+		$$->set_data_type($1->get_data_type());
 	}
 	| ID LPAREN argument_list RPAREN
 	{
 	    outlog<<"At line no: "<<lines<<" factor : ID LPAREN argument_list RPAREN "<<endl<<endl;
 		outlog<<$1->getname()<<"("<<$3->getname()<<")"<<endl<<endl;
 
-		// Look up the function in the symbol table
+		// Look up the function/variable in the symbol table
 		symbol_info *func_lookup = new symbol_info($1->getname(), "ID");
 		symbol_info *func_sym = sym_table->lookup(func_lookup);
 		delete func_lookup;
 
-		if (func_sym != NULL && func_sym->get_symbol_class() == "function")
-		{
-			int num_params = func_sym->get_param_count();
-			// Parse argument list: split by comma to count arguments
-			string arg_str = $3->getname();
-			int num_args = 0;
-			if (!arg_str.empty())
-			{
-				num_args = 1;
-				for (char c : arg_str)
-				{
-					if (c == ',') num_args++;
-				}
-			}
+		string result_type = "int"; // default
 
-			// Report type mismatch for each argument position
-			// (Since we do not track expression result types, every call reports mismatch
-			//  as shown in the expected output)
-			for (int i = 0; i < num_params && i < num_args; i++)
+		if (func_sym == NULL)
+		{
+			// Undeclared function
+			outerr<<"At line no: "<<lines<<" Undeclared function: "<<$1->getname()<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" Undeclared function: "<<$1->getname()<<endl<<endl;
+			error_count++;
+		}
+		else if (func_sym->get_symbol_class() != "function")
+		{
+			// Calling a non-function as a function
+			outerr<<"At line no: "<<lines<<" "<<$1->getname()<<" is not a function"<<endl<<endl;
+			outlog<<"At line no: "<<lines<<" "<<$1->getname()<<" is not a function"<<endl<<endl;
+			error_count++;
+		}
+		else
+		{
+			result_type = func_sym->get_data_type();
+
+			// Check argument count
+			int expected_count = func_sym->get_param_count();
+			int actual_count = (int)current_arg_types.size();
+
+			if (expected_count != actual_count)
 			{
-				outlog<<"At line no: "<<lines<<" argument "<<(i+1)<<" type mismatch in function call: "<<$1->getname()<<endl<<endl;
+				outerr<<"At line no: "<<lines<<" Inconsistencies in number of arguments in function call: "<<$1->getname()<<endl<<endl;
+				outlog<<"At line no: "<<lines<<" Inconsistencies in number of arguments in function call: "<<$1->getname()<<endl<<endl;
+				error_count++;
+			}
+			else
+			{
+				// Check each argument's type against the function's return type
+				for (int i = 0; i < actual_count; i++)
+				{
+					if (current_arg_types[i] != result_type)
+					{
+						outerr<<"At line no: "<<lines<<" argument "<<(i+1)<<" type mismatch in function call: "<<$1->getname()<<endl<<endl;
+						outlog<<"At line no: "<<lines<<" argument "<<(i+1)<<" type mismatch in function call: "<<$1->getname()<<endl<<endl;
+						error_count++;
+					}
+				}
 			}
 		}
 
+		// Clear argument type list after checking
+		current_arg_types.clear();
+
 		$$ = new symbol_info($1->getname()+"("+$3->getname()+")","fctr");
+		$$->set_data_type(result_type);
 	}
 	| LPAREN expression RPAREN
 	{
@@ -672,6 +847,7 @@ factor	: variable
 		outlog<<"("<<$2->getname()<<")"<<endl<<endl;
 		
 		$$ = new symbol_info("("+$2->getname()+")","fctr");
+		$$->set_data_type($2->get_data_type());
 	}
 	| CONST_INT 
 	{
@@ -679,6 +855,7 @@ factor	: variable
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"fctr");
+		$$->set_data_type("int");
 	}
 	| CONST_FLOAT
 	{
@@ -686,6 +863,7 @@ factor	: variable
 		outlog<<$1->getname()<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname(),"fctr");
+		$$->set_data_type("float");
 	}
 	| variable INCOP 
 	{
@@ -693,6 +871,7 @@ factor	: variable
 		outlog<<$1->getname()<<"++"<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname()+"++","fctr");
+		$$->set_data_type($1->get_data_type());
 	}
 	| variable DECOP
 	{
@@ -700,6 +879,7 @@ factor	: variable
 		outlog<<$1->getname()<<"--"<<endl<<endl;
 		
 		$$ = new symbol_info($1->getname()+"--","fctr");
+		$$->set_data_type($1->get_data_type());
 	}
 	;
 	
@@ -715,6 +895,9 @@ argument_list : arguments
 					outlog<<"At line no: "<<lines<<" argument_list :  "<<endl<<endl;
 					outlog<<""<<endl<<endl;
 					
+					// No arguments - clear the arg types list
+					current_arg_types.clear();
+					
 					$$ = new symbol_info("","arg_list");
 			  }
 			  ;
@@ -724,12 +907,19 @@ arguments : arguments COMMA logic_expression
 				outlog<<"At line no: "<<lines<<" arguments : arguments COMMA logic_expression "<<endl<<endl;
 				outlog<<$1->getname()<<","<<$3->getname()<<endl<<endl;
 				
+				// Track this argument's data type
+				current_arg_types.push_back($3->get_data_type());
+				
 				$$ = new symbol_info($1->getname()+","+$3->getname(),"arg");
 		  }
 	      | logic_expression
 	      {
 				outlog<<"At line no: "<<lines<<" arguments : logic_expression "<<endl<<endl;
 				outlog<<$1->getname()<<endl<<endl;
+				
+				// First argument - reset and start fresh
+				current_arg_types.clear();
+				current_arg_types.push_back($1->get_data_type());
 				
 				$$ = new symbol_info($1->getname(),"arg");
 		  }
@@ -747,6 +937,7 @@ int main(int argc, char *argv[])
 	}
 	yyin = fopen(argv[1], "r");
 	outlog.open("24341140+24341217_log.txt", ios::trunc);
+	outerr.open("24341140+24341217_error.txt", ios::trunc);
 	
 	if(yyin == NULL)
 	{
@@ -763,9 +954,13 @@ int main(int argc, char *argv[])
 
 	yyparse();
 	
-	outlog<<endl<<"Total lines: "<<lines<<endl<<endl;
+	outlog<<endl<<"Total lines: "<<lines<<endl;
+	outlog<<"Total errors: "<<error_count<<endl;
+
+	outerr<<"Total errors: "<<error_count<<endl;
 	
 	outlog.close();
+	outerr.close();
 	
 	fclose(yyin);
 
